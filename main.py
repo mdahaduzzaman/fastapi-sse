@@ -28,6 +28,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/")
 async def index():
     return {"message": "Server is up and running"}
@@ -36,7 +37,9 @@ async def index():
 async def validate_token(token: str):
     async with httpx.AsyncClient() as client:
         try:
-            response = await client.get(settings.AUTH_URL, headers={"Authorization": f"Bearer {token}"})
+            response = await client.get(
+                settings.AUTH_URL, headers={"Authorization": f"Bearer {token}"}
+            )
             response.raise_for_status()
             result = response.json()
             company_id = result.get("company_id")
@@ -50,6 +53,8 @@ async def validate_token(token: str):
 
 
 async def get_current_user(token: str):
+    if not token:
+        raise HTTPException(status_code=401, detail="Token is required")
     company_id = await validate_token(token)
     return company_id
 
@@ -65,7 +70,6 @@ async def event_stream(company_id: str) -> AsyncGenerator[str, None]:
 
         keep_alive_interval = 15  # in seconds
         last_keep_alive = asyncio.get_event_loop().time()
-
 
         while True:
             message = await pubsub.get_message(
