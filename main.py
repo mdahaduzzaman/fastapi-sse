@@ -18,7 +18,7 @@ redis_client = redis.Redis(
     password=settings.REDIS_PASSWORD,
 )
 
-app = FastAPI(docs_url=None)
+app = FastAPI(docs_url=None, redoc_url=None)
 
 app.add_middleware(
     CORSMiddleware,
@@ -49,7 +49,7 @@ async def validate_token(token: str):
             raise HTTPException(status_code=500, detail="Token validation failed")
 
 
-async def get_current_user(token: str = None):
+async def get_current_user(token: str):
     company_id = await validate_token(token)
     return company_id
 
@@ -98,5 +98,5 @@ async def event_stream(company_id: str) -> AsyncGenerator[str, None]:
 
 
 @app.get("/live-loads/")
-async def live_loads(token: str = None, company_id: str = Depends(get_current_user)):
+async def live_loads(token: str, company_id: str = Depends(get_current_user)):
     return StreamingResponse(event_stream(company_id), media_type="text/event-stream")
