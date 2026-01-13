@@ -1,11 +1,11 @@
-from fastapi import Depends, FastAPI, HTTPException
+import json
+import httpx
+import asyncio
 import redis.asyncio as redis
+from typing import AsyncGenerator
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from typing import AsyncGenerator
-import asyncio
-import httpx
-import json
+from fastapi import Depends, FastAPI, HTTPException
 
 from config import get_settings
 
@@ -59,7 +59,7 @@ async def get_current_user(token: str):
     return company_id
 
 
-async def event_stream(company_id: str) -> AsyncGenerator[str, None]:
+async def load_event_stream(company_id: str) -> AsyncGenerator[str, None]:
     print(f"streaming started for company_id: *{company_id}*")
     channel_name = f"LOADS-CHANNEL::-{company_id}"
     pubsub = redis_client.pubsub()
@@ -98,9 +98,66 @@ async def event_stream(company_id: str) -> AsyncGenerator[str, None]:
         print(f"Disconnected companyd_id: *{company_id}*")
     finally:
         await pubsub.unsubscribe(channel_name)
-        await pubsub.close()
+        await pubsub.aclose()
 
 
 @app.get("/live-loads/")
 async def live_loads(token: str, company_id: str = Depends(get_current_user)):
-    return StreamingResponse(event_stream(company_id), media_type="text/event-stream")
+    return StreamingResponse(
+        load_event_stream(company_id), media_type="text/event-stream"
+    )
+
+
+async def safety_event_stream(company_id: str) -> AsyncGenerator[str, None]:
+    print(f"streaming started for company_id: *{company_id}*")
+    channel_name = f"SAFETY-EVENTS-CHANNEL::-{company_id}"
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(channel_name)
+
+    try:
+        yield "retry: 3000\n\n"
+
+        keep_alive_interval = 15  # in seconds
+        last_keep_alive = asyncio.get_event_loop().time()
+
+        while True:
+            message = await pubsub.get_message(
+                ignore_subscribe_messages=True, timeout=1
+            )
+            if message and message["type"] == "message":
+                data = message["data"].decode("utf-8")
+
+                try:
+                    payload = json.loads(data)
+                    event_type = payload.get("event", "default")
+                    event_data = json.dumps(payload.get("data", {}))
+                except Exception:
+                    continue
+
+                yield f"event: {event_type}\ndata: {event_data}\n\n"
+
+            # Keep-alive ping every N seconds
+            now = asyncio.get_event_loop().time()
+            if now - last_keep_alive > keep_alive_interval:
+                yield ":keep-alive\n\n"
+                last_keep_alive = now
+
+            await asyncio.sleep(0.1)
+    except asyncio.CancelledError:
+        print(f"Disconnected companyd_id: *{company_id}*")
+    finally:
+        await pubsub.unsubscribe(channel_name)
+        await pubsub.aclose()
+
+
+@app.get("/live-safety-events/")
+async def live_safety_events(token: str, company_id: str = Depends(get_current_user)):
+    return StreamingResponse(
+        safety_event_stream(company_id), media_type="text/event-stream"
+    )
+
+
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=8009)
