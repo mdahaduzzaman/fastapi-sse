@@ -1,3 +1,4 @@
+import jwt
 import json
 import httpx
 import asyncio
@@ -35,15 +36,36 @@ async def index():
 
 
 async def validate_token(token: str):
+    try:
+        payload = jwt.decode(
+            token,
+            options={"verify_signature": False, "verify_exp": False},
+        )
+
+        user_id = payload.get("user_id")
+
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token payload")
+
+        cache_key = f"auth:company_id:{user_id}"
+        cached_company_id = await redis_client.get(cache_key)
+        if cached_company_id:
+            return cached_company_id
+
+    except jwt.DecodeError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
     async with httpx.AsyncClient() as client:
         try:
+            url = f"{settings.MAIN_BACKEND_URL}/api/v1/company-id/"
             response = await client.get(
-                settings.AUTH_URL, headers={"Authorization": f"Bearer {token}"}
+                url, headers={"Authorization": f"Bearer {token}"}
             )
             response.raise_for_status()
             result = response.json()
             company_id = result.get("company_id")
             if company_id:
+                await redis_client.setex(cache_key, 21600, company_id)  # 6 hour
                 return company_id
             else:
                 raise HTTPException(status_code=401, detail="Invalid token")

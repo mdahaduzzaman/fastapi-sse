@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_PASSWORD: str = "1234"
     REDIS_DB: str = "0"
-    AUTH_URL: str = "http://localhost:8001/validate/"
+    MAIN_BACKEND_URL: str = "http://localhost:8000"
 
     model_config = SettingsConfigDict(env_file=".env")
 
