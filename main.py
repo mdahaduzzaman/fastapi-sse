@@ -6,7 +6,7 @@ import redis.asyncio as redis
 from typing import AsyncGenerator
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request, Cookie
 
 from config import get_settings
 
@@ -81,9 +81,46 @@ async def get_current_user(token: str):
     return company_id
 
 
+async def get_current_user_v2(
+    tenant: str,
+    request: Request,
+    sessionid: str | None = Cookie(None),
+):
+    token = sessionid
+    if not token:
+        print(f"checking cookie")
+        token = request.headers.get("X-Session-Token")
+    print(f"token: {token}")
+    print(f"tenant: {tenant}")
+
+    cache_key = f"sse:company_id:{token}:{tenant}"
+    cached_company_id = await redis_client.get(cache_key)
+    if cached_company_id:
+        return cached_company_id.decode("utf-8")
+
+    async with httpx.AsyncClient() as client:
+        try:
+            url = f"{settings.MAIN_BACKEND_URL}/api/v1/company-id/"
+            response = await client.get(
+                url, headers={"X-Session-Token": token, "X-Tenant": tenant}
+            )
+            response.raise_for_status()
+            result = response.json()
+            company_id = result.get("company_id")
+            if not company_id:
+                raise HTTPException(status_code=401, detail="Invalid token")
+
+            await redis_client.setex(cache_key, 21600, company_id)  # 6 hour
+            return company_id
+
+        except httpx.HTTPError as e:
+            print(f"error = {e}")
+            raise HTTPException(status_code=500, detail="Token validation failed")
+
+
 async def load_event_stream(company_id: str) -> AsyncGenerator[str, None]:
-    print(f"streaming started for company_id: *{company_id}*")
     channel_name = f"LOADS-CHANNEL::-{company_id}"
+    print(f"streaming channel: *{channel_name}*")
     pubsub = redis_client.pubsub()
     await pubsub.subscribe(channel_name)
 
@@ -125,6 +162,16 @@ async def load_event_stream(company_id: str) -> AsyncGenerator[str, None]:
 
 @app.get("/live-loads/")
 async def live_loads(token: str, company_id: str = Depends(get_current_user)):
+    return StreamingResponse(
+        load_event_stream(company_id), media_type="text/event-stream"
+    )
+
+
+@app.get("/live-loads/v2/")
+async def live_loads_v2(
+    request: Request,
+    company_id: str = Depends(get_current_user_v2),
+):
     return StreamingResponse(
         load_event_stream(company_id), media_type="text/event-stream"
     )
